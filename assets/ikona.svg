@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="bg" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#2dd4bf"/>
+      <stop offset="0.55" stop-color="#0d9488"/>
+      <stop offset="1" stop-color="#115e59"/>
+    </linearGradient>
+    <linearGradient id="sjaj" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".3"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="papir" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#dff3f0"/>
+    </linearGradient>
+    <linearGradient id="znak" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fcd34d"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+    <filter id="sjena" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="6" stdDeviation="7" flood-color="#042f2e" flood-opacity=".35"/>
+    </filter>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="58" fill="url(#bg)"/>
+  <path d="M66 8h124a58 58 0 0 1 58 58v18c-60 16-180 16-240 0V66A58 58 0 0 1 66 8z" fill="url(#sjaj)"/>
+  <g filter="url(#sjena)">
+    <path d="M60 58a14 14 0 0 1 14-14h84a14 14 0 0 1 14 14v148l-14-10-14 10-14-10-14 10-14-10-14 10-14-10-14 10z" fill="url(#papir)"/>
+  </g>
+  <rect x="80" y="68" width="46" height="12" rx="6" fill="#0f766e"/>
+  <rect x="80" y="96" width="72" height="9" rx="4.5" fill="#99d5cf"/>
+  <rect x="80" y="117" width="56" height="9" rx="4.5" fill="#99d5cf"/>
+  <rect x="80" y="138" width="64" height="9" rx="4.5" fill="#99d5cf"/>
+  <g filter="url(#sjena)">
+    <circle cx="186" cy="184" r="46" fill="url(#znak)" stroke="#ffffff" stroke-width="8"/>
+  </g>
+  <path d="M163 184h42M189 167l17 17-17 17" fill="none" stroke="#134e4a" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
