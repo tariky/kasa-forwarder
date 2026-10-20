@@ -246,15 +246,18 @@ pub fn periodicni_izvjestaj(p: &Period) -> Result<Komanda, String> {
     Ok(Komanda { putanje: &["/spi"], xml: zahtjev_xml(5, &parametri) })
 }
 
-// Duplikat fiskalnog računa: isti XML kao ERP forma DUPLIKATI (Tring grana), Zahtjev s
-// VrstaZahtjeva 3 i parametrom BrojRacuna. Uređaj štampa nefiskalnu kopiju s oznakom
-// duplikata; promet se ne mijenja, pa ponavljanje košta samo papir.
+// StampatiDuplikatFiskalnogRacuna (uputstvo v3.0.1, 7.8; isporučeni primjer
+// USB_printer_primjeri/StampatiDuplikatFiskalnogRacuna.xml; isto piše i ERP forma DUPLIKATI):
+// Zahtjev s VrstaZahtjeva 3 i parametrom BrojRacuna, datoteka "...xml ili sdfr.xml", pa je
+// kratki path rezerva. Duplikat po broju računa rade samo uređaji s Tring USB interfejsom
+// (TringFavourite Plus / TringPartner znaju samo duplikat zadnjeg dokumenta); ostali vrate
+// grešku. Promet se ne mijenja, pa ponavljanje košta samo papir.
 pub fn duplikat_racuna(d: &Duplikat) -> Result<Komanda, String> {
     if d.broj_racuna == 0 {
         return Err("brojRacuna: broj fiskalnog računa čiji se duplikat štampa je obavezan".into());
     }
     let parametri = format!("<Parametri><Parametar><Naziv>BrojRacuna</Naziv><Vrijednost>{}</Vrijednost></Parametar></Parametri>", d.broj_racuna);
-    Ok(Komanda { putanje: &["/stampatiduplikatfiskalnogracuna"], xml: zahtjev_xml(3, &parametri) })
+    Ok(Komanda { putanje: &["/stampatiduplikatfiskalnogracuna", "/sdfr"], xml: zahtjev_xml(3, &parametri) })
 }
 
 // UnosNovca je VrstaZahtjeva 7, PovratNovca 8 (isporučeni povratnovca.xml kaže 8,
@@ -775,13 +778,19 @@ mod tests {
     fn duplikat_ima_oblik_erp_forme_duplikati() {
         let d: Duplikat = serde_json::from_str(r#"{"brojRacuna":152}"#).unwrap();
         let k = duplikat_racuna(&d).unwrap();
-        assert_eq!(k.putanje, &["/stampatiduplikatfiskalnogracuna"]);
+        assert_eq!(k.putanje, &["/stampatiduplikatfiskalnogracuna", "/sdfr"]);
         assert!(k.xml.starts_with(&format!("{XML_DECL}<Zahtjev {XMLNS}><BrojZahtjeva>")), "{}", k.xml);
         assert!(k.xml.ends_with(
             "<VrstaZahtjeva>3</VrstaZahtjeva><Parametri><Parametar><Naziv>BrojRacuna</Naziv><Vrijednost>152</Vrijednost></Parametar></Parametri></Zahtjev>"
         ), "{}", k.xml);
         let nula: Duplikat = serde_json::from_str(r#"{"brojRacuna":0}"#).unwrap();
         assert!(duplikat_racuna(&nula).is_err());
+        // Primjer odgovora iz uputstva v3.0.1, 7.8: prazni Odgovori, bez BrojZahtjeva.
+        let o = parsiraj(
+            r#"<?xml version="1.0" encoding="utf-8"?><KasaOdgovor xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema"><Odgovori /><VrstaOdgovora>OK</VrstaOdgovora></KasaOdgovor>"#,
+            Some(200),
+        );
+        assert!(o.success && !o.ishod_nepoznat && o.error.is_none());
     }
 
     #[test]

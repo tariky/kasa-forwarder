@@ -131,7 +131,7 @@ Neispravan zahtjev daje 400, pogrešan token 401, nedozvoljen origin 403.
 | `POST /api/test` | GET /test | – → isto kao komanda. **Uređaj odštampa probni isječak**, zato samo na zahtjev (npr. na početku smjene), nikad u petlji. |
 | `POST /api/racun` | sfr | `{ stavke, placanja, kupac?, napomena?, brojRacuna? }` |
 | `POST /api/reklamacija` | srr | `{ stavke, brojRacuna, placanja?, kupac?, napomena? }`, pravila su ispod |
-| `POST /api/duplikat` | stampatiduplikatfiskalnogracuna | `{ brojRacuna }` — duplikat fiskalnog računa (nefiskalna kopija), XML kao ERP forma DUPLIKATI |
+| `POST /api/duplikat` | stampatiduplikatfiskalnogracuna (sdfr) | `{ brojRacuna }` — duplikat fiskalnog računa (uputstvo v3.0.1, 7.8); samo uređaji s Tring USB interfejsom |
 | `POST /api/presjek-stanja` | sps (X) | – |
 | `POST /api/dnevni-izvjestaj` | sdi (Z) | – |
 | `POST /api/periodicni-izvjestaj` | spi | `{ "od": "2026-09-01", "do": "2026-09-30" }` |
