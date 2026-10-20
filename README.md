@@ -1,36 +1,54 @@
-# Kasa forwarder
+# Tornado Kasa
 
 Mali Windows program (~1 MB exe, ~2–3 MB RAM) koji prima JSON komande od web appa,
 sastavlja XML i šalje ga Tring.Fiscal.Server-u (TFS). Svaka komanda se upisuje u
-`kasa-forwarder.log`. Ikona u system trayu otvara prozor s logom i podešavanjima.
+`tornado-kasa.log`. Ikona u system trayu otvara prozor s logom i podešavanjima.
 
 ```
-browser (web app s intraneta) ──JSON──► kasa-forwarder 127.0.0.1:8086 ──XML──► TFS localhost:8085
+browser (web app s intraneta) ──JSON──► tornado-kasa 127.0.0.1:8086 ──XML──► TFS localhost:8085
 ```
 
 ## Instalacija na kasi
 
-Pokreni `KasaForwarder-Setup-X.Y.Z.exe` i prati čarobnjak. Admin prava nisu potrebna.
+Pokreni `TornadoKasa-Setup-X.Y.Z.exe` i prati čarobnjak. Admin prava nisu potrebna.
 
-- Instalira se u `%LOCALAPPDATA%\Programs\Kasa Forwarder`. Tu su i `config.json` i log.
+- Instalira se u `%LOCALAPPDATA%\Programs\Tornado Kasa`. Tu su i `config.json` i log.
 - Opcija „Pokreni automatski pri prijavi na Windows” je uključena po defaultu.
 - Na kraju se forwarder pokrene i otvori prozor. Tamo u **Podešavanjima** upiši
   adresu web appa i token.
 - **Nadogradnja:** pokreni noviji Setup preko postojećeg. Forwarder se uredno ugasi
   i ponovo pokrene, a `config.json` i log ostaju.
-- **Deinstalacija:** Postavke → Aplikacije → Kasa Forwarder. Pita da li da obriše i
+- **Sa starog imena (Kasa Forwarder, do 0.1.3):** isti Setup radi i kao nadogradnja.
+  Instalacija ostaje u starom folderu `Programs\Kasa Forwarder`, a stari exe, autostart
+  i prečice se uklone; `kasa-forwarder.log` se preimenuje u `tornado-kasa.log`.
+- **Deinstalacija:** Postavke → Aplikacije → Tornado Kasa. Pita da li da obriše i
   podešavanja i log.
 
 Tiha instalacija na više kasa (bez pitanja, forwarder se pokrene u pozadini):
 ```
-KasaForwarder-Setup-X.Y.Z.exe /VERYSILENT /TASKS="autostart"
+TornadoKasa-Setup-X.Y.Z.exe /VERYSILENT /TASKS="autostart"
 ```
 
 Installer nije digitalno potpisan, pa Windows SmartScreen pri prvom pokretanju
 kaže „Windows je zaštitio vaš PC”. Klikni **Više informacija → Ipak pokreni**.
 
-Bez installera radi i ručno: kopiraj `kasa-forwarder.exe` u neki folder i pokreni
-`kasa-forwarder.exe install` (odnosno `uninstall`).
+### Bez Inno Setupa (build na Macu)
+
+```sh
+tools/napravi-rucni-paket.sh
+```
+Napravi Windows exe (cross-build, treba `rustup target add x86_64-pc-windows-gnu`
+i `brew install mingw-w64`) i `dist/TornadoKasa-<verzija>-rucno.zip`. Na kasi
+raspakuj zip i dvoklikni `instaliraj.cmd`. Radi isto što i Setup: ugasi forwarder,
+kopira exe u `%LOCALAPPDATA%\Programs\Tornado Kasa`, napravi prečicu u Start
+meniju, uključi autostart, doda stavku u Postavke → Aplikacije i otvori prozor.
+Opcije: `-Tiho`, `-BezAutostarta`, `-PrecicaNaDesktopu`. Deinstalacija:
+`deinstaliraj.cmd` ili preko Aplikacija. Ako je forwarder ranije instaliran
+Inno Setupom, ovo samo zamijeni exe, a Inno stavka za deinstalaciju ostaje.
+Skripta je `installer/rucna-instalacija.ps1`. Kad mijenjaš `.iss`, promijeni i nju.
+
+Bez installera radi i ručno: kopiraj `tornado-kasa.exe` u neki folder i pokreni
+`tornado-kasa.exe install` (odnosno `uninstall`).
 
 ### Pravljenje installera
 
@@ -38,8 +56,8 @@ Bez installera radi i ručno: kopiraj `kasa-forwarder.exe` u neki folder i pokre
 powershell -ExecutionPolicy Bypass -File tools\napravi-installer.ps1
 ```
 Radi `cargo build --release` pa Inno Setup (6.5+ ili 7), a rezultat je
-`dist\KasaForwarder-Setup-<verzija iz Cargo.toml>.exe`. Za novu verziju promijeni
-`version` u `Cargo.toml`. Skripta installera je `installer\kasa-forwarder.iss`, a
+`dist\TornadoKasa-Setup-<verzija iz Cargo.toml>.exe`. Za novu verziju promijeni
+`version` u `Cargo.toml`. Skripta installera je `installer\tornado-kasa.iss`, a
 slike čarobnjaka se prave iz ikone sa `python tools\napravi-installer-slike.py`.
 
 ## Tray i prozor
@@ -50,6 +68,13 @@ slike čarobnjaka se prave iz ikone sa `python tools\napravi-installer-slike.py`
 - **Log**: današnji brojači, pretraga, filteri (uspješno / greške / odbijeno /
   sistem), listanje po 100 zapisa, osvježavanje uživo. Klik na red prikazuje
   primljeni JSON te XML poslan Tringu i njegov odgovor.
+- **Obavijest o grešci**: kad komanda iz web appa završi greškom (Tring vratio
+  grešku, TFS nedostupan, ishod nepoznat), Windows pokaže obavijest. Klik na nju
+  otvori prozor s tim zapisom raširenim (filter Greške + pretraga po vremenu).
+  Ako je uključen „Ne ometaj” / Focus assist, obavijest ide samo u centar obavijesti.
+- **Testiraj kasu** (dugme gore desno): Tringov test `GET /test`. Uređaj odštampa
+  probni isječak, a forwarder javi da li je TFS vratio `OK`. Zelena tačka
+  „Tring dostupan” znači samo da TFS sluša na portu; ovo provjerava i uređaj.
 - **Podešavanja**: sve iz `config.json` plus autostart. Snimanje ih provjeri
   (npr. da li je port slobodan) pa restartuje forwarder.
 
@@ -103,8 +128,10 @@ Neispravan zahtjev daje 400, pogrešan token 401, nedozvoljen origin 403.
 | Ruta | Tring | Tijelo |
 |---|---|---|
 | `GET /api/health` | – | – → `{ ok, verzija, tringUrl, tringDostupan }` |
+| `POST /api/test` | GET /test | – → isto kao komanda. **Uređaj odštampa probni isječak**, zato samo na zahtjev (npr. na početku smjene), nikad u petlji. |
 | `POST /api/racun` | sfr | `{ stavke, placanja, kupac?, napomena?, brojRacuna? }` |
 | `POST /api/reklamacija` | srr | `{ stavke, brojRacuna, placanja?, kupac?, napomena? }`, pravila su ispod |
+| `POST /api/duplikat` | stampatiduplikatfiskalnogracuna | `{ brojRacuna }` — duplikat fiskalnog računa (nefiskalna kopija), XML kao ERP forma DUPLIKATI |
 | `POST /api/presjek-stanja` | sps (X) | – |
 | `POST /api/dnevni-izvjestaj` | sdi (Z) | – |
 | `POST /api/periodicni-izvjestaj` | spi | `{ "od": "2026-09-01", "do": "2026-09-30" }` |
@@ -178,7 +205,7 @@ U prozoru je takav red pod filterom „greške”.
 
 ```sh
 cargo test                 # testovi XML-a, parsiranja odgovora i 502/504 (lažni TFS na 127.0.0.1)
-cargo build --release      # target/release/kasa-forwarder.exe
+cargo build --release      # target/release/tornado-kasa.exe
 ```
 Debug build otvara konzolni prozor, release ne. Za testiranje bez uređaja koristi se
 mock iz kasa-appa: `bun run src/services/tring-mock-server.ts 8085`.

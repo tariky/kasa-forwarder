@@ -1,18 +1,24 @@
-; Installer za Kasa Forwarder (Inno Setup 6.5+ / 7).
+; Installer za Tornado Kasa (Inno Setup 6.5+ / 7).
 ; Gradi se preko tools\napravi-installer.ps1, koji prosljeđuje verziju iz Cargo.toml.
 ;
-; Instalira se po korisniku, bez admin prava, u %LOCALAPPDATA%\Programs\Kasa Forwarder,
+; Instalira se po korisniku, bez admin prava, u %LOCALAPPDATA%\Programs\Tornado Kasa,
 ; jer forwarder pored exe-a piše config.json i log. Tiha instalacija za više kasa:
-;   KasaForwarder-Setup-X.Y.Z.exe /VERYSILENT /TASKS="autostart"
+;   TornadoKasa-Setup-X.Y.Z.exe /VERYSILENT /TASKS="autostart"
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
-#define AppName "Kasa Forwarder"
-#define AppExe "kasa-forwarder.exe"
+#define AppName "Tornado Kasa"
+#define AppExe "tornado-kasa.exe"
 #define RunKljuc "Software\Microsoft\Windows\CurrentVersion\Run"
 ; Isto ime vrijednosti koristi i sam program (install/uninstall, prekidač u prozoru).
-#define RunVrijednost "KasaForwarder"
+#define RunVrijednost "TornadoKasa"
+; Do 0.1.3 program se zvao Kasa Forwarder. Nadogradnja ide u isti folder (isti AppId),
+; pa stari exe, autostart i log treba počistiti/preimenovati.
+#define StariExe "kasa-forwarder.exe"
+#define StariRun "KasaForwarder"
+#define StariLog "kasa-forwarder.log"
+#define Log "tornado-kasa.log"
 
 [Setup]
 ; AppId se nikad ne mijenja — po njemu installer prepoznaje nadogradnju.
@@ -30,7 +36,7 @@ DisableDirPage=auto
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist
-OutputBaseFilename=KasaForwarder-Setup-{#AppVersion}
+OutputBaseFilename=TornadoKasa-Setup-{#AppVersion}
 SetupIconFile=..\assets\ikona.ico
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
@@ -49,8 +55,8 @@ Name: "hr"; MessagesFile: "compiler:Default.isl,Croatian.isl"
 [CustomMessages]
 hr.Dodatno=Dodatno:
 hr.Autostart=Pokreni automatski pri prijavi na Windows (preporučeno)
-hr.Pokreni=Pokreni Kasa Forwarder
-hr.Opis=Log i podešavanja Kasa Forwardera
+hr.Pokreni=Pokreni Tornado Kasu
+hr.Opis=Log i podešavanja Tornado Kase
 hr.ObrisatiPodatke=Obrisati i podešavanja (config.json, token, adrese) i log?%n%nAko planiraš ponovo instalirati forwarder, odaberi Ne.
 
 [Tasks]
@@ -59,6 +65,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "..\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
+
+[InstallDelete]
+Type: files; Name: "{app}\{#StariExe}"
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Comment: "{cm:Opis}"
@@ -75,10 +84,7 @@ Filename: "{app}\{#AppExe}"; Description: "{cm:Pokreni}"; Flags: nowait postinst
 Filename: "{app}\{#AppExe}"; Parameters: "--autostart"; Flags: nowait; Check: WizardSilent
 
 [Code]
-const
-  ExeIme = '{#AppExe}';
-
-function ForwarderRadi(): Boolean;
+function ProcesRadi(ExeIme: String): Boolean;
 var
   Kod: Integer;
 begin
@@ -87,22 +93,28 @@ begin
     '', SW_HIDE, ewWaitUntilTerminated, Kod) and (Kod = 0);
 end;
 
-{ Prvo uredno (WM_CLOSE — forwarder skine ikonu iz traya i upiše STOP u log), pa na silu. }
-procedure ZatvoriForwarder();
+{ Prvo uredno (WM_CLOSE — program skine ikonu iz traya i upiše STOP u log), pa na silu. }
+procedure ZatvoriProces(ExeIme: String);
 var
   Kod, I: Integer;
 begin
-  if not ForwarderRadi() then
+  if not ProcesRadi(ExeIme) then
     Exit;
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM ' + ExeIme, '', SW_HIDE, ewWaitUntilTerminated, Kod);
   for I := 1 to 20 do
   begin
-    if not ForwarderRadi() then
+    if not ProcesRadi(ExeIme) then
       Exit;
     Sleep(250);
   end;
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM ' + ExeIme, '', SW_HIDE, ewWaitUntilTerminated, Kod);
   Sleep(500);
+end;
+
+procedure ZatvoriForwarder();
+begin
+  ZatvoriProces('{#AppExe}');
+  ZatvoriProces('{#StariExe}');
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -112,10 +124,22 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Dir: String;
 begin
-  { Izbor u installeru ima prednost i nad prekidačem iz prozora forwardera. }
-  if (CurStep = ssPostInstall) and not WizardIsTaskSelected('autostart') then
-    RegDeleteValue(HKCU, '{#RunKljuc}', '{#RunVrijednost}');
+  if CurStep = ssPostInstall then
+  begin
+    { Izbor u installeru ima prednost i nad prekidačem iz prozora forwardera. }
+    if not WizardIsTaskSelected('autostart') then
+      RegDeleteValue(HKCU, '{#RunKljuc}', '{#RunVrijednost}');
+    { Ostaci Kasa Forwardera: stari autostart bi pokretao obrisani exe, log zadržavamo pod novim imenom. }
+    RegDeleteValue(HKCU, '{#RunKljuc}', '{#StariRun}');
+    Dir := ExpandConstant('{app}');
+    if FileExists(Dir + '\{#StariLog}') and not FileExists(Dir + '\{#Log}') then
+      RenameFile(Dir + '\{#StariLog}', Dir + '\{#Log}');
+    if FileExists(Dir + '\{#StariLog}.1') and not FileExists(Dir + '\{#Log}.1') then
+      RenameFile(Dir + '\{#StariLog}.1', Dir + '\{#Log}.1');
+  end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -135,8 +159,8 @@ begin
        (MsgBox(CustomMessage('ObrisatiPodatke'), mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES) then
     begin
       DeleteFile(Dir + '\config.json');
-      DeleteFile(Dir + '\kasa-forwarder.log');
-      DeleteFile(Dir + '\kasa-forwarder.log.1');
+      DeleteFile(Dir + '\{#Log}');
+      DeleteFile(Dir + '\{#Log}.1');
     end;
     RemoveDir(Dir);
   end;

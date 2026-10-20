@@ -55,6 +55,10 @@ pub fn obradi(app: &Arc<App>, mut rq: Request, putanja: &str) {
         (Method::Get, "/favicon.ico") => staticno(rq, "image/x-icon", crate::IKONA),
         (Method::Get, "/ui/stanje") => odgovori(rq, 200, &stanje(app), &[]),
         (Method::Get, "/ui/log") => odgovori(rq, 200, &log(app, &upit), &[]),
+        (Method::Post, "/ui/test") => {
+            let (status, tijelo) = crate::izvrsi(app, "ui", "/api/test", "{}", None, std::time::Instant::now());
+            odgovori(rq, status, &tijelo, &[])
+        }
         (Method::Get, "/ui/postavke") => {
             let mut v = serde_json::to_value(&app.cfg).unwrap_or_default();
             v["autostart"] = json!(crate::win::autostart_ukljucen());
@@ -87,7 +91,7 @@ pub fn obradi(app: &Arc<App>, mut rq: Request, putanja: &str) {
 // ---------------------------------------------------------------------------
 
 fn putanja_loga(app: &App) -> std::path::PathBuf {
-    app.dir.join("kasa-forwarder.log")
+    app.dir.join("tornado-kasa.log")
 }
 
 /// Linije oba log fajla, od najstarije do najnovije.

@@ -1,9 +1,9 @@
-// Kasa forwarder: mali lokalni HTTP server koji prima JSON komande od web appa,
+// Tornado Kasa: mali lokalni HTTP server koji prima JSON komande od web appa,
 // sastavlja XML i šalje ga Tring.Fiscal.Server-u. Svaka komanda ide u log fajl.
 //
-//   kasa-forwarder.exe              pokreni server + ikonu u trayu (ako već radi: otvori prozor)
-//   kasa-forwarder.exe install      autostart pri prijavi na Windows + pokreni odmah
-//   kasa-forwarder.exe uninstall    ukloni autostart i zaustavi server
+//   tornado-kasa.exe              pokreni server + ikonu u trayu (ako već radi: otvori prozor)
+//   tornado-kasa.exe install      autostart pri prijavi na Windows + pokreni odmah
+//   tornado-kasa.exe uninstall    ukloni autostart i zaustavi server
 
 // U release buildu nema konzolnog prozora.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -19,14 +19,14 @@ use dnevnik::Dnevnik;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::Read;
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{env, fs, thread};
 use tiny_http::{Header, Method, Request, Response, Server};
 
-const NASLOV: &str = "Kasa forwarder";
+const NASLOV: &str = "Tornado Kasa";
 const MAX_TIJELO: u64 = 1024 * 1024;
 const BROJ_RADNIKA: usize = 4;
 pub const IKONA: &[u8] = include_bytes!("../assets/ikona.ico");
@@ -85,14 +85,14 @@ fn main() {
     let cfg = match ucitaj_config(&dir) {
         Ok(c) => c,
         Err(e) => {
-            Dnevnik::new(dir.join("kasa-forwarder.log"), 5 << 20).upisi(&format!("START GREŠKA {e}"));
+            Dnevnik::new(dir.join("tornado-kasa.log"), 5 << 20).upisi(&format!("START GREŠKA {e}"));
             if !autostart {
                 win::poruka(NASLOV, &e, true);
             }
             return;
         }
     };
-    let dnevnik = Dnevnik::new(dir.join("kasa-forwarder.log"), cfg.log_max_mb.max(1) << 20);
+    let dnevnik = Dnevnik::new(dir.join("tornado-kasa.log"), cfg.log_max_mb.max(1) << 20);
 
     let port = port_iz(&cfg.listen);
 
@@ -111,7 +111,7 @@ fn main() {
         Err(e) => {
             // Dvoklik na exe dok forwarder već radi = otvori njegov prozor.
             if !autostart && vec_radi(port) {
-                return otvori_prozor(port);
+                return otvori_prozor(port, "");
             }
             dnevnik.upisi(&format!("START GREŠKA ne mogu slušati na {}: {e}", cfg.listen));
             // Pri autostartu je ovo najčešće druga instanca koja već radi — bez popupa.
@@ -147,15 +147,17 @@ fn main() {
 
     // Ručno pokretanje (Start meni, dvoklik) odmah pokazuje prozor; autostart je tih.
     if !autostart && !restart {
-        otvori_prozor(port);
+        otvori_prozor(port, "");
     }
 
     #[cfg(windows)]
     {
-        let (a1, a2, a3) = (app.clone(), app.clone(), app.clone());
+        let (a1, a2, a3, a4) = (app.clone(), app.clone(), app.clone(), app.clone());
         tray::pokreni(tray::Tray {
-            opis: format!("Kasa forwarder · {}", app.cfg.listen),
-            na_otvori: Box::new(move || otvori_prozor(a1.port)),
+            opis: format!("Tornado Kasa · {}", app.cfg.listen),
+            na_otvori: Box::new(move || otvori_prozor(a1.port, "")),
+            // Ključ obavijesti je vrijeme linije u logu; prozor po njemu otvori taj zapis.
+            na_obavijest: Box::new(move |vrijeme| otvori_prozor(a4.port, &format!("#greska={}", vrijeme.replace(' ', "%20")))),
             na_folder: Box::new(move || win::otvori(&a2.dir.display().to_string())),
             na_ugasi: Box::new(move |razlog| {
                 a3.dnevnik.upisi(&format!("STOP {razlog}"));
@@ -188,7 +190,7 @@ pub fn restartuj(app: &App, razlog: &str) {
     std::process::exit(0);
 }
 
-/// Da li na portu već radi kasa-forwarder (a ne neki drugi program).
+/// Da li na portu već radi tornado-kasa (a ne neki drugi program).
 fn vec_radi(port: u16) -> bool {
     ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(2))
@@ -202,8 +204,9 @@ fn vec_radi(port: u16) -> bool {
 }
 
 /// Prozor forwardera: Edge u "app" modu (bez adresne trake), inače obični browser.
-fn otvori_prozor(port: u16) {
-    let url = format!("http://127.0.0.1:{port}/ui");
+/// `sidro` (npr. "#greska=…") kaže prozoru šta da odmah prikaže.
+fn otvori_prozor(port: u16, sidro: &str) {
+    let url = format!("http://127.0.0.1:{port}/ui{sidro}");
     let edge = ["ProgramFiles(x86)", "ProgramFiles"]
         .iter()
         .filter_map(|v| env::var_os(v))
@@ -328,18 +331,33 @@ fn obradi(app: &Arc<App>, mut rq: Request) {
     };
     let ulaz_za_log = za_log(&ulaz);
 
-    let komanda = match sastavi(&putanja, ulaz) {
-        None => return odgovori(rq, 404, &greska(format!("Nepoznata komanda {putanja}")), &cors),
-        Some(Err(e)) => {
-            app.dnevnik.upisi(&format!("{klijent} POST {putanja} -> ODBIJENO 400 {e} | {ulaz_za_log}"));
-            return odgovori(rq, 400, &greska(e), &cors);
+    let komanda = if putanja == "/api/test" {
+        None
+    } else {
+        match sastavi(&putanja, ulaz) {
+            None => return odgovori(rq, 404, &greska(format!("Nepoznata komanda {putanja}")), &cors),
+            Some(Err(e)) => {
+                app.dnevnik.upisi(&format!("{klijent} POST {putanja} -> ODBIJENO 400 {e} | {ulaz_za_log}"));
+                return odgovori(rq, 400, &greska(e), &cors);
+            }
+            Some(Ok(k)) => Some(k),
         }
-        Some(Ok(k)) => k,
     };
+    let (status, tijelo) = izvrsi(app, &klijent, &putanja, &ulaz_za_log, komanda.as_ref(), pocetak);
+    odgovori(rq, status, &tijelo, &cors);
+}
 
+/// Šalje komandu TFS-u (None = Tringov GET /test), upiše je u log i vrati HTTP status
+/// i tijelo odgovora za web app.
+pub fn izvrsi(app: &App, klijent: &str, putanja: &str, ulaz_za_log: &str, komanda: Option<&tring::Komanda>, pocetak: Instant) -> (u16, Value) {
+    let cfg = &app.cfg;
+    let timeout = Duration::from_secs(cfg.timeout_sekundi);
     let rezultat = {
         let _red = app.tring.lock().unwrap_or_else(|e| e.into_inner());
-        tring::posalji(&cfg.tring_url, Duration::from_secs(cfg.timeout_sekundi), &komanda)
+        match komanda {
+            Some(k) => tring::posalji(&cfg.tring_url, timeout, k),
+            None => tring::test_uredjaja(&cfg.tring_url, timeout),
+        }
     };
     let ms = pocetak.elapsed().as_millis();
 
@@ -349,13 +367,19 @@ fn obradi(app: &Arc<App>, mut rq: Request) {
     } else {
         // Kod greške se čuva i XML — bez toga se ne da rekonstruisati šta je uređaj dobio.
         // [ISHOD NEPOZNAT] = možda izvršeno (504), da se u logu razlikuje od sigurne greške.
-        app.dnevnik.upisi(&format!(
+        let _vrijeme = app.dnevnik.upisi(&format!(
             "{klijent} POST {putanja} -> GREŠKA {ms}ms {}{} | {ulaz_za_log} | poslano: {} | odgovor: {}",
             if rezultat.ishod_nepoznat { "[ISHOD NEPOZNAT] " } else { "" },
             rezultat.error.as_deref().unwrap_or(""),
-            komanda.xml,
+            komanda.map_or("GET /test", |k| k.xml.as_str()),
             rezultat.sirovi
         ));
+        // Testiraj kasu iz prozora grešku već prikazuje — obavijest samo za web app.
+        #[cfg(windows)]
+        if klijent != "ui" {
+            let poruka: String = rezultat.error.as_deref().unwrap_or("Nepoznata greška").chars().take(200).collect();
+            tray::obavijesti(&format!("Greška na kasi: {}", naziv_komande(putanja)), &format!("{poruka}\nKlikni za detalje."), &_vrijeme);
+        }
     }
 
     // 200 = TFS je odgovorio (success kaže da li je uspjelo), 502 = komanda sigurno
@@ -367,8 +391,26 @@ fn obradi(app: &Arc<App>, mut rq: Request) {
     } else {
         502
     };
-    let tijelo = serde_json::to_value(&rezultat).unwrap_or_else(|_| greska("interna greška"));
-    odgovori(rq, status, &tijelo, &cors);
+    (status, serde_json::to_value(&rezultat).unwrap_or_else(|_| greska("interna greška")))
+}
+
+/// Isti nazivi kao u prozoru (NAZIVI u ui.html).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn naziv_komande(putanja: &str) -> &str {
+    match putanja {
+        "/api/racun" => "fiskalni račun",
+        "/api/reklamacija" => "reklamacija",
+        "/api/duplikat" => "duplikat fiskalnog računa",
+        "/api/presjek-stanja" => "presjek stanja (X)",
+        "/api/dnevni-izvjestaj" => "dnevni izvještaj (Z)",
+        "/api/periodicni-izvjestaj" => "periodični izvještaj",
+        "/api/unos-novca" => "unos novca",
+        "/api/povrat-novca" => "povrat novca",
+        "/api/inicijalizacija" => "inicijalizacija",
+        "/api/artikal" => "upis artikla",
+        "/api/test" => "test kase",
+        p => p,
+    }
 }
 
 fn sastavi(putanja: &str, ulaz: Value) -> Option<Result<tring::Komanda, String>> {
@@ -380,6 +422,7 @@ fn sastavi(putanja: &str, ulaz: Value) -> Option<Result<tring::Komanda, String>>
         "/api/artikal" => p(ulaz).and_then(|a| tring::upisi_artikal(&a)),
         "/api/racun" => p(ulaz).and_then(|r| tring::fiskalni_racun(&r)),
         "/api/reklamacija" => p(ulaz).and_then(|r| tring::reklamirani_racun(&r)),
+        "/api/duplikat" => p(ulaz).and_then(|d| tring::duplikat_racuna(&d)),
         "/api/presjek-stanja" => Ok(tring::presjek_stanja()),
         "/api/dnevni-izvjestaj" => Ok(tring::dnevni_izvjestaj()),
         "/api/periodicni-izvjestaj" => p(ulaz).and_then(|z| tring::periodicni_izvjestaj(&z)),
@@ -400,12 +443,15 @@ fn za_log(v: &Value) -> String {
 
 pub fn health(cfg: &Config) -> Value {
     // Samo TCP konekcija — ne ide kroz red za printer, pa radi i dok se štampa.
-    let adresa = cfg.tring_url.trim_start_matches("http://").split('/').next().unwrap_or("");
-    let dostupan = adresa
-        .to_socket_addrs()
-        .ok()
-        .and_then(|mut a| a.next())
-        .map(|a| TcpStream::connect_timeout(&a, Duration::from_secs(1)).is_ok())
+    let host = cfg.tring_url.trim_start_matches("http://").split('/').next().unwrap_or("");
+    let adresa = if host.rsplit_once(':').is_some_and(|(_, p)| p.parse::<u16>().is_ok()) {
+        host.to_string()
+    } else {
+        format!("{host}:80")
+    };
+    // Iste adrese, istim redom (IPv4 prvo), kao kod slanja komande.
+    let dostupan = tring::adrese(&adresa)
+        .map(|a| a.iter().any(|a| TcpStream::connect_timeout(a, Duration::from_secs(1)).is_ok()))
         .unwrap_or(false);
     json!({
         "ok": true,
@@ -435,7 +481,7 @@ fn instaliraj(exe: &Path, dir: &PathBuf) {
             cfg.listen,
             cfg.tring_url,
             dir.join("config.json").display(),
-            dir.join("kasa-forwarder.log").display()
+            dir.join("tornado-kasa.log").display()
         ),
         false,
     );
@@ -453,4 +499,19 @@ fn deinstaliraj(exe: &Path) {
     }
     let _ = cmd.status();
     win::poruka(NASLOV, "Autostart je uklonjen i forwarder je zaustavljen.", false);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn health_vidi_tring_koji_slusa_samo_na_ipv4() {
+        // TFS sluša samo na 127.0.0.1, a "localhost" se na Windowsu prvo razriješi u ::1.
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let cfg = Config { tring_url: format!("http://localhost:{port}"), ..Config::default() };
+        assert_eq!(health(&cfg)["tringDostupan"], true);
+    }
 }

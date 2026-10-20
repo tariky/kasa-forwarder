@@ -1,4 +1,4 @@
-# Gradi release exe i installer: dist\KasaForwarder-Setup-<verzija>.exe
+# Gradi release exe i installer: dist\TornadoKasa-Setup-<verzija>.exe
 # Verzija se čita iz Cargo.toml. Traži Inno Setup 6.5+ ili 7 (ISCC.exe).
 #   powershell -ExecutionPolicy Bypass -File tools\napravi-installer.ps1
 
@@ -23,9 +23,9 @@ try {
     $iscc = $kandidati | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (-not $iscc) { throw 'Inno Setup nije instaliran (https://jrsoftware.org/isdl.php)' }
 
-    & $iscc "/DAppVersion=$verzija" 'installer\kasa-forwarder.iss'
+    & $iscc "/DAppVersion=$verzija" 'installer\tornado-kasa.iss'
     if ($LASTEXITCODE -ne 0) { throw 'ISCC nije uspio' }
-    Get-Item "dist\KasaForwarder-Setup-$verzija.exe" | Select-Object Name, @{ n = 'MB'; e = { [math]::Round($_.Length / 1MB, 2) } }
+    Get-Item "dist\TornadoKasa-Setup-$verzija.exe" | Select-Object Name, @{ n = 'MB'; e = { [math]::Round($_.Length / 1MB, 2) } }
 }
 finally {
     Pop-Location

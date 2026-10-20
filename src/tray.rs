@@ -1,12 +1,13 @@
-// Ikona u system trayu: dvoklik otvara prozor, desni klik meni.
+// Ikona u system trayu: dvoklik otvara prozor, desni klik meni, obavijesti o greškama.
 // Radi na glavnoj niti (Win32 petlja poruka); server radi na svojim nitima.
 
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_ERROR, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NIN_BALLOONUSERCLICK, NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -18,6 +19,8 @@ const ID_UGASI: usize = 3;
 pub struct Tray {
     pub opis: String,
     pub na_otvori: Box<dyn Fn() + Send + Sync>,
+    /// Klik na obavijest; argument je ključ iz `obavijesti`.
+    pub na_obavijest: Box<dyn Fn(&str) + Send + Sync>,
     pub na_folder: Box<dyn Fn() + Send + Sync>,
     /// Argument je razlog gašenja, za log.
     pub na_ugasi: Box<dyn Fn(&str) + Send + Sync>,
@@ -26,9 +29,21 @@ pub struct Tray {
 static TRAY: OnceLock<Tray> = OnceLock::new();
 static HWND_TRAY: AtomicIsize = AtomicIsize::new(0);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+/// Ključ zadnje obavijesti — Windows pokazuje samo jednu, pa klik uvijek znači zadnju.
+static ZADNJA_OBAVIJEST: Mutex<String> = Mutex::new(String::new());
 
 fn w(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Kopira tekst u fiksno polje strukture (odsiječe ako je predug, uvijek završi nulom).
+fn upisi_u(polje: &mut [u16], s: &str) {
+    let mut n = 0;
+    for c in s.encode_utf16().take(polje.len() - 1) {
+        polje[n] = c;
+        n += 1;
+    }
+    polje[n] = 0;
 }
 
 /// Ikona iz ugrađenog .ico (PNG slike), najbliža traženoj veličini.
@@ -69,10 +84,24 @@ unsafe fn dodaj_ikonu(hwnd: HWND) {
     d.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     d.uCallbackMessage = WM_TRAY;
     d.hIcon = ucitaj_ikonu(crate::IKONA, GetSystemMetrics(SM_CXSMICON));
-    for (i, c) in t.opis.encode_utf16().take(d.szTip.len() - 1).enumerate() {
-        d.szTip[i] = c;
-    }
+    upisi_u(&mut d.szTip, &t.opis);
     Shell_NotifyIconW(NIM_ADD, &d);
+}
+
+/// Windows obavijest (toast) iz ikone u trayu. Klik na nju poziva `na_obavijest(kljuc)`.
+/// Može se pozvati s bilo koje niti.
+pub fn obavijesti(naslov: &str, tekst: &str, kljuc: &str) {
+    let hwnd = HWND_TRAY.load(Ordering::SeqCst) as HWND;
+    if hwnd.is_null() {
+        return;
+    }
+    *ZADNJA_OBAVIJEST.lock().unwrap_or_else(|e| e.into_inner()) = kljuc.to_string();
+    let mut d = podaci_ikone(hwnd);
+    d.uFlags = NIF_INFO;
+    d.dwInfoFlags = NIIF_ERROR;
+    upisi_u(&mut d.szInfoTitle, naslov);
+    upisi_u(&mut d.szInfo, tekst);
+    unsafe { Shell_NotifyIconW(NIM_MODIFY, &d) };
 }
 
 /// Skida ikonu iz traya (poziva se prije izlaska iz procesa, s bilo koje niti).
@@ -110,6 +139,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_TRAY => {
             match lparam as u32 {
                 WM_LBUTTONDBLCLK => (t.na_otvori)(),
+                NIN_BALLOONUSERCLICK => {
+                    let kljuc = ZADNJA_OBAVIJEST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                    (t.na_obavijest)(&kljuc);
+                }
                 WM_RBUTTONUP | WM_CONTEXTMENU => prikazi_meni(hwnd),
                 _ => {}
             }
@@ -154,7 +187,7 @@ pub fn pokreni(tray: Tray) {
     }
     unsafe {
         let hinst = GetModuleHandleW(std::ptr::null());
-        let klasa = w("KasaForwarderTray");
+        let klasa = w("TornadoKasaTray");
         let mut wc: WNDCLASSW = std::mem::zeroed();
         wc.lpfnWndProc = Some(wndproc);
         wc.hInstance = hinst;

@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::io;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -109,6 +111,13 @@ pub struct Inicijalizacija {
 pub struct Novac {
     pub iznos: f64,
     pub oznaka: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Duplikat {
+    /// Broj fiskalnog računa (BF) čiji se duplikat štampa.
+    pub broj_racuna: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -235,6 +244,17 @@ pub fn periodicni_izvjestaj(p: &Period) -> Result<Komanda, String> {
         "<Parametri><Parametar><Naziv>odDatuma</Naziv><Vrijednost>{od} 00:00:00</Vrijednost></Parametar><Parametar><Naziv>doDatuma</Naziv><Vrijednost>{do_} 23:59:59</Vrijednost></Parametar></Parametri>"
     );
     Ok(Komanda { putanje: &["/spi"], xml: zahtjev_xml(5, &parametri) })
+}
+
+// Duplikat fiskalnog računa: isti XML kao ERP forma DUPLIKATI (Tring grana), Zahtjev s
+// VrstaZahtjeva 3 i parametrom BrojRacuna. Uređaj štampa nefiskalnu kopiju s oznakom
+// duplikata; promet se ne mijenja, pa ponavljanje košta samo papir.
+pub fn duplikat_racuna(d: &Duplikat) -> Result<Komanda, String> {
+    if d.broj_racuna == 0 {
+        return Err("brojRacuna: broj fiskalnog računa čiji se duplikat štampa je obavezan".into());
+    }
+    let parametri = format!("<Parametri><Parametar><Naziv>BrojRacuna</Naziv><Vrijednost>{}</Vrijednost></Parametar></Parametri>", d.broj_racuna);
+    Ok(Komanda { putanje: &["/stampatiduplikatfiskalnogracuna"], xml: zahtjev_xml(3, &parametri) })
 }
 
 // UnosNovca je VrstaZahtjeva 7, PovratNovca 8 (isporučeni povratnovca.xml kaže 8,
@@ -508,28 +528,52 @@ fn procitaj(status: u16, r: ureq::Response) -> TringOdgovor {
     }
 }
 
-/// Šalje komandu na TFS. Nikad ne vraća Err — greška veze je neuspješan odgovor.
-pub fn posalji(tring_url: &str, timeout: Duration, k: &Komanda) -> TringOdgovor {
+fn odgovor(rezultat: Result<ureq::Response, ureq::Error>) -> TringOdgovor {
+    match rezultat {
+        Ok(r) => procitaj(r.status(), r),
+        Err(ureq::Error::Status(status, r)) => procitaj(status, r),
+        Err(ureq::Error::Transport(t)) => match isporuka(t.kind()) {
+            Isporuka::NijePoslana => neuspjeh(format!("Tring server nije dostupan: {t}"), None, false, String::new()),
+            Isporuka::Nepoznato => neuspjeh(
+                format!("Komanda je možda izvršena: Tring server nije odgovorio ({t}). {PROVJERI_UREDJAJ}"),
+                None,
+                true,
+                String::new(),
+            ),
+        },
+    }
+}
+
+/// Adrese hosta, IPv4 prije IPv6. "localhost" se na Windowsu prvo razriješi u ::1, a TFS
+/// sluša samo na 127.0.0.1 — odbijena konekcija na ::1 tamo traje 1–2 s (Windows ponavlja
+/// SYN) prije prelaska na IPv4, i to bi se plaćalo kod svake komande.
+pub fn adrese(netloc: &str) -> io::Result<Vec<SocketAddr>> {
+    let mut a: Vec<SocketAddr> = netloc.to_socket_addrs()?.collect();
+    a.sort_by_key(SocketAddr::is_ipv6);
+    Ok(a)
+}
+
+fn agent(timeout: Duration) -> ureq::Agent {
     // Bez redirekata: POST bi se pretvorio u GET na drugi URL, a greška tamo bi
     // izgledala kao da TFS nije ni dobio komandu.
-    let agent = ureq::AgentBuilder::new().timeout(timeout).redirects(0).build();
+    ureq::AgentBuilder::new().timeout(timeout).redirects(0).resolver(adrese).build()
+}
+
+/// Tringov test (uputstvo za integraciju, str. 10): GET /test. TFS pita uređaj i
+/// vrati VrstaOdgovora OK, a uređaj odštampa nefiskalni isječak s fiskalnim režimom
+/// i brojem IBFM. Zbog papira se zove samo na zahtjev, nikad iz health-a.
+pub fn test_uredjaja(tring_url: &str, timeout: Duration) -> TringOdgovor {
+    let agent = agent(timeout);
+    odgovor(agent.get(&format!("{}/test", tring_url.trim_end_matches('/'))).call())
+}
+
+/// Šalje komandu na TFS. Nikad ne vraća Err — greška veze je neuspješan odgovor.
+pub fn posalji(tring_url: &str, timeout: Duration, k: &Komanda) -> TringOdgovor {
+    let agent = agent(timeout);
     let mut zadnji = None;
     for putanja in k.putanje {
         let url = format!("{}{}", tring_url.trim_end_matches('/'), putanja);
-        let rezultat = agent.post(&url).set("Content-Type", "text/xml").send_string(&k.xml);
-        let odgovor = match rezultat {
-            Ok(r) => procitaj(r.status(), r),
-            Err(ureq::Error::Status(status, r)) => procitaj(status, r),
-            Err(ureq::Error::Transport(t)) => match isporuka(t.kind()) {
-                Isporuka::NijePoslana => neuspjeh(format!("Tring server nije dostupan: {t}"), None, false, String::new()),
-                Isporuka::Nepoznato => neuspjeh(
-                    format!("Komanda je možda izvršena: Tring server nije odgovorio ({t}). {PROVJERI_UREDJAJ}"),
-                    None,
-                    true,
-                    String::new(),
-                ),
-            },
-        };
+        let odgovor = odgovor(agent.post(&url).set("Content-Type", "text/xml").send_string(&k.xml));
         // 404 znači "TFS ne zna ovaj path, probaj rezervni". Nakon nepoznatog
         // ishoda se nikad ne proba druga putanja.
         if odgovor.success || odgovor.ishod_nepoznat || odgovor.status_code != Some(404) {
@@ -725,6 +769,19 @@ mod tests {
         assert!(s(r#"{"idBroj":"42000","naziv":"Firma"}"#).unwrap_err().contains("13 cifara"));
         assert!(s(r#"{"idBroj":"4200000000000","naziv":"Firma sa jako jako jako dugim nazivom d.o.o."}"#).unwrap_err().contains("32"));
         assert!(s(r#"{"idBroj":"4200000000000","naziv":"Firma","postanskiBroj":"710"}"#).unwrap_err().contains("5 cifara"));
+    }
+
+    #[test]
+    fn duplikat_ima_oblik_erp_forme_duplikati() {
+        let d: Duplikat = serde_json::from_str(r#"{"brojRacuna":152}"#).unwrap();
+        let k = duplikat_racuna(&d).unwrap();
+        assert_eq!(k.putanje, &["/stampatiduplikatfiskalnogracuna"]);
+        assert!(k.xml.starts_with(&format!("{XML_DECL}<Zahtjev {XMLNS}><BrojZahtjeva>")), "{}", k.xml);
+        assert!(k.xml.ends_with(
+            "<VrstaZahtjeva>3</VrstaZahtjeva><Parametri><Parametar><Naziv>BrojRacuna</Naziv><Vrijednost>152</Vrijednost></Parametar></Parametri></Zahtjev>"
+        ), "{}", k.xml);
+        let nula: Duplikat = serde_json::from_str(r#"{"brojRacuna":0}"#).unwrap();
+        assert!(duplikat_racuna(&nula).is_err());
     }
 
     #[test]
@@ -929,6 +986,39 @@ mod tests {
         let putanje: Vec<_> = primljeno.lock().unwrap().iter().map(|z| z.split(' ').nth(1).unwrap_or("").to_string()).collect();
         assert_eq!(putanje, ["/unosnovca", "/un"]);
         assert!(serde_json::to_value(&o).unwrap().get("ishodNepoznat").is_none());
+    }
+
+    #[test]
+    fn test_uredjaja_salje_get_test_i_cita_ok() {
+        let (url, primljeno) = lazni_tfs(vec![Some(
+            "HTTP/1.1 200 OK\r\nContent-Length: 72\r\nConnection: close\r\n\r\n<KasaOdgovor><Odgovori /><VrstaOdgovora>OK</VrstaOdgovora></KasaOdgovor>",
+        )]);
+        let o = test_uredjaja(&url, Duration::from_secs(5));
+        assert!(o.success, "{o:?}");
+        assert!(primljeno.lock().unwrap()[0].starts_with("GET /test "));
+    }
+
+    #[test]
+    fn localhost_se_prvo_proba_na_ipv4() {
+        let a = adrese("localhost:8085").unwrap();
+        assert!(a[0].is_ipv4(), "{a:?}");
+    }
+
+    #[test]
+    fn komanda_preko_localhost_stize_na_tfs_koji_slusa_samo_na_ipv4() {
+        let (url, primljeno) = lazni_tfs(vec![Some(
+            "HTTP/1.1 200 OK\r\nContent-Length: 72\r\nConnection: close\r\n\r\n<KasaOdgovor><Odgovori /><VrstaOdgovora>OK</VrstaOdgovora></KasaOdgovor>",
+        )]);
+        let o = test_uredjaja(&url.replace("127.0.0.1", "localhost"), Duration::from_secs(5));
+        assert!(o.success, "{o:?}");
+        assert_eq!(primljeno.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_uredjaja_bez_tfs_je_nedostupan() {
+        let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let o = test_uredjaja(&format!("http://127.0.0.1:{port}"), Duration::from_secs(1));
+        assert!(!o.success && !o.ishod_nepoznat && o.status_code.is_none(), "{o:?}");
     }
 
     #[test]

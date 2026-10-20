@@ -11,7 +11,9 @@ mod imp {
     use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_ICONINFORMATION, MB_OK, SW_SHOWNORMAL};
 
     const RUN_KLJUC: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-    const RUN_VRIJEDNOST: &str = "KasaForwarder";
+    const RUN_VRIJEDNOST: &str = "TornadoKasa";
+    /// Ime do 0.1.3 (Kasa Forwarder); briše se da stari unos ne pokreće obrisani exe.
+    const STARA_RUN_VRIJEDNOST: &str = "KasaForwarder";
 
     fn w(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -36,12 +38,16 @@ mod imp {
                 (podaci.len() * 2) as u32,
             )
         };
+        unsafe {
+            RegDeleteKeyValueW(HKEY_CURRENT_USER, w(RUN_KLJUC).as_ptr(), w(STARA_RUN_VRIJEDNOST).as_ptr());
+        }
         if rez == ERROR_SUCCESS { Ok(()) } else { Err(format!("upis u registar nije uspio (kod {rez})")) }
     }
 
     pub fn iskljuci_autostart() {
         unsafe {
             RegDeleteKeyValueW(HKEY_CURRENT_USER, w(RUN_KLJUC).as_ptr(), w(RUN_VRIJEDNOST).as_ptr());
+            RegDeleteKeyValueW(HKEY_CURRENT_USER, w(RUN_KLJUC).as_ptr(), w(STARA_RUN_VRIJEDNOST).as_ptr());
         }
     }
 
@@ -97,10 +103,41 @@ mod imp {
     pub fn autostart_ukljucen() -> bool {
         false
     }
-    pub fn otvori(_sta: &str) {}
+    pub fn otvori(sta: &str) {
+        let program = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let _ = std::process::Command::new(program).arg(sta).spawn();
+    }
+
+    // struct tm iz libc (isti raspored na macOS-u i glibc-u).
+    #[repr(C)]
+    struct Tm {
+        sec: i32,
+        min: i32,
+        hour: i32,
+        mday: i32,
+        mon: i32,
+        year: i32,
+        wday: i32,
+        yday: i32,
+        isdst: i32,
+        gmtoff: std::ffi::c_long,
+        zone: *const std::ffi::c_char,
+    }
+
+    extern "C" {
+        fn localtime_r(t: *const i64, tm: *mut Tm) -> *mut Tm;
+    }
+
+    /// Isti format kao na Windowsu — prozor iz njega čita vrijeme i dnevnu statistiku.
     pub fn lokalno_vrijeme() -> String {
-        let s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-        format!("{}", s.as_secs())
+        let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        let s = d.as_secs() as i64;
+        let mut t: Tm = unsafe { std::mem::zeroed() };
+        unsafe { localtime_r(&s, &mut t) };
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+            t.year + 1900, t.mon + 1, t.mday, t.hour, t.min, t.sec, d.subsec_millis()
+        )
     }
 }
 

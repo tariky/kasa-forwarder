@@ -157,17 +157,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
-name = "kasa-forwarder"
-version = "0.1.1"
-dependencies = [
- "serde",
- "serde_json",
- "tiny_http",
- "ureq",
- "windows-sys",
-]
-
-[[package]]
 name = "litemap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -321,6 +310,17 @@ checksum = "b1e27c91459209c2986af3dcf603a5a74a4368754ce37414f59acc971167f643"
 dependencies = [
  "displaydoc",
  "zerovec",
+]
+
+[[package]]
+name = "tornado-kasa"
+version = "0.1.4"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tiny_http",
+ "ureq",
+ "windows-sys",
 ]
 
 [[package]]

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kasa forwarder</title>
+<title>Tornado Kasa</title>
 <link rel="icon" href="/favicon.ico">
 <style>
   :root {
@@ -194,12 +194,14 @@
 <header>
   <img src="/ui/ikona.svg" alt="">
   <div>
-    <h1>Kasa forwarder</h1>
+    <h1>Tornado Kasa</h1>
     <div class="ver" id="verzija"></div>
   </div>
   <div class="grow"></div>
   <span class="pill sakrij-usko" title="Adresa na kojoj forwarder prima komande"><code id="listen">…</code></span>
   <span class="pill" id="tring-pill" title=""><span class="dot"></span><span id="tring-txt">Tring…</span></span>
+  <span class="poruka" id="test-poruka"></span>
+  <button class="btn" id="test-kase" title="Tringov test (GET /test): uređaj odštampa probni nefiskalni isječak">Testiraj kasu</button>
 </header>
 
 <nav role="tablist">
@@ -339,6 +341,7 @@ const LIMIT = 100;
 const NAZIVI = {
   "/api/racun": "Fiskalni račun",
   "/api/reklamacija": "Reklamacija",
+  "/api/duplikat": "Duplikat računa",
   "/api/presjek-stanja": "Presjek stanja (X)",
   "/api/dnevni-izvjestaj": "Dnevni izvještaj (Z)",
   "/api/periodicni-izvjestaj": "Periodični izvještaj",
@@ -349,7 +352,8 @@ const NAZIVI = {
 };
 const ISHOD = { OK: ["ok", "Uspješno"], "GREŠKA": ["greska", "Greška"], ODBIJENO: ["odbijeno", "Odbijeno"] };
 
-const stanje = { od: 0, vrsta: "", q: "", ukupno: 0, otvoreni: new Set(), uzivo: true };
+// otvori = vrijeme linije koju treba odmah raširiti (klik na Windows obavijest o grešci).
+const stanje = { od: 0, vrsta: "", q: "", ukupno: 0, otvoreni: new Set(), uzivo: true, otvori: null };
 
 function el(tag, attrs = {}, ...djeca) {
   const e = document.createElement(tag);
@@ -412,6 +416,9 @@ function sazetak(z) {
       if (broj) dio.push(["b", `Reklamacija br. ${broj}`]);
       if (u.brojRacuna != null) dio.push(`za račun ${u.brojRacuna}`);
       if (u.stavke?.length) dio.push(`${u.stavke.length} ${u.stavke.length === 1 ? "stavka" : "stavki"}`);
+      break;
+    case "/api/duplikat":
+      if (u.brojRacuna != null) dio.push(["b", `Račun br. ${u.brojRacuna}`]);
       break;
     case "/api/unos-novca":
     case "/api/povrat-novca":
@@ -491,6 +498,11 @@ function prikaziLog(podaci) {
     tbody.append(tr);
     if (z.vrsta === "sistem") { tr.classList.remove("red"); continue; }
     const det = el("tr", { class: "detalji" }, el("td", { colspan: "5" }, detalji(z)));
+    if (stanje.otvori && linija.startsWith(stanje.otvori + " ")) {
+      stanje.otvoreni.add(kljuc);
+      stanje.otvori = null;
+      requestAnimationFrame(() => tr.scrollIntoView({ block: "center" }));
+    }
     det.hidden = !stanje.otvoreni.has(kljuc);
     tr.classList.toggle("otvoren", !det.hidden);
     tr.onclick = () => {
@@ -509,12 +521,17 @@ function prikaziLog(podaci) {
   $("starije").disabled = kraj >= podaci.ukupno;
 }
 
+// Uživo i ručna osvježavanja se mogu preklopiti — prikazuje se samo odgovor zadnjeg zahtjeva.
+let logZahtjev = 0, logUToku = false;
 async function ucitajLog() {
+  const moj = ++logZahtjev;
   const p = new URLSearchParams({ od: stanje.od, limit: LIMIT, vrsta: stanje.vrsta, q: stanje.q });
+  logUToku = true;
   try {
-    const r = await fetch("/ui/log?" + p);
-    prikaziLog(await r.json());
+    const podaci = await (await fetch("/ui/log?" + p)).json();
+    if (moj === logZahtjev) prikaziLog(podaci);
   } catch { /* server se restartuje */ }
+  if (moj === logZahtjev) logUToku = false;
 }
 
 async function ucitajStanje() {
@@ -556,11 +573,33 @@ $("osvjezi").onclick = () => { ucitajLog(); ucitajStanje(); };
 $("uzivo").onclick = (e) => {
   stanje.uzivo = !stanje.uzivo;
   e.currentTarget.setAttribute("aria-pressed", stanje.uzivo);
+  osvjeziUzivo(true);
 };
-setInterval(() => {
-  // Uživo samo na prvoj strani, da se ne pomjera ono što korisnik čita.
-  if (stanje.uzivo && stanje.od === 0 && !$("tab-log").hidden && !document.hidden) { ucitajLog(); ucitajStanje(); }
-}, 3000);
+// Uživo samo na prvoj strani, da se ne pomjera ono što korisnik čita. Log svake sekunde
+// (čitanje je ~15 ms), stanje rjeđe jer svaki put otvara TCP konekciju prema TFS-u.
+let otkucaj = 0;
+function osvjeziUzivo(sve) {
+  if (!stanje.uzivo || stanje.od !== 0 || $("tab-log").hidden || document.hidden) return;
+  if (!logUToku) ucitajLog();
+  if (sve) ucitajStanje();
+}
+setInterval(() => osvjeziUzivo(++otkucaj % 3 === 0), 1000);
+document.addEventListener("visibilitychange", () => osvjeziUzivo(true));
+
+$("test-kase").onclick = async (e) => {
+  const b = e.currentTarget, p = $("test-poruka");
+  b.disabled = true;
+  p.className = "poruka"; p.textContent = "Testiram…";
+  try {
+    const o = await (await fetch("/ui/test", { method: "POST" })).json();
+    p.className = "poruka " + (o.success ? "ok" : "err");
+    p.textContent = o.success ? "Kasa odgovara" : (o.error || "Kasa ne odgovara");
+  } catch {
+    p.className = "poruka err"; p.textContent = "Forwarder ne odgovara";
+  }
+  b.disabled = false;
+  ucitajLog(); ucitajStanje();
+};
 
 // --- tabovi ---
 document.querySelector("nav").addEventListener("click", (e) => {
@@ -570,6 +609,7 @@ document.querySelector("nav").addEventListener("click", (e) => {
   $("tab-log").hidden = b.dataset.tab !== "log";
   $("tab-postavke").hidden = b.dataset.tab !== "postavke";
   if (b.dataset.tab === "postavke") ucitajPostavke();
+  else osvjeziUzivo(true);
 });
 
 // --- podešavanja ---
@@ -655,6 +695,15 @@ $("forma").addEventListener("submit", async (e) => {
     $("snimi").disabled = false;
   }
 });
+
+// #greska=<vrijeme iz loga>: prozor otvoren klikom na obavijest — pokaži i raširi taj zapis.
+const sidro = location.hash.match(/^#greska=(.+)$/);
+if (sidro) {
+  stanje.otvori = stanje.q = $("trazi").value = decodeURIComponent(sidro[1]);
+  stanje.vrsta = "greske";
+  for (const x of $("filter").children) x.setAttribute("aria-pressed", x.dataset.v === "greske");
+  history.replaceState(null, "", location.pathname);
+}
 
 ucitajStanje();
 ucitajLog();
